@@ -14,6 +14,7 @@ to log anything use the logging module.
 import hlt
 # Then let's import the logging module so we can print out information
 import logging
+import traceback
 from datetime import datetime, timedelta
 
 # GAME START
@@ -51,47 +52,53 @@ def get_nearest_unowned_planet_for_ship(game_map, ship):
 
 timedelta_2s = timedelta(seconds=2)
 timedelta_buffer = timedelta(milliseconds=200)
-while True:
-    # TURN START
-    time_turnstart = datetime.utcnow()
-    time_timeout = time_turnstart + timedelta_2s
+try:
+    while True:
+        # TURN START
+        time_turnstart = datetime.utcnow()
+        time_timeout = time_turnstart + timedelta_2s
 
-    # Update the map for the new turn and get the latest version
-    game_map = game.update_map()
+        # Update the map for the new turn and get the latest version
+        game_map = game.update_map()
 
-    # Here we define the set of commands to be sent to the Halite engine at the end of the turn
-    command_queue = []
+        # Here we define the set of commands to be sent to the Halite engine at the end of the turn
+        command_queue = []
 
-    # For every ship that I control
-    for ship in game_map.get_me().all_ships():
-        time_now = datetime.utcnow()
+        # For every ship that I control
+        for ship in game_map.get_me().all_ships():
+            time_now = datetime.utcnow()
 
-        # End turn early if needed due to timeout.
-        if time_now + timedelta_buffer >= time_timeout:
-            LOG.critical('BAILING TURN FOR TIMEOUT')
-            break  # break out of the per ship loop, which should send our commands
+            # End turn early if needed due to timeout.
+            if time_now + timedelta_buffer >= time_timeout:
+                LOG.critical('BAILING TURN FOR TIMEOUT')
+                break  # break out of the per ship loop, which should send our commands
 
-        nearest_planet = get_nearest_planet_for_ship(game_map, ship)
-        nearest_unowned_planet = get_nearest_unowned_planet_for_ship(game_map, ship)
-        LOG.debug('ship %s, nearest ANY_planet: %s', ship, nearest_planet)
-        LOG.debug('ship %s, nearest UNO_planet: %s', ship, nearest_unowned_planet)
-        # If the ship is docked
-        if ship.docking_status != ship.DockingStatus.UNDOCKED:
-            # Skip this ship
-            continue
+            nearest_planet = get_nearest_planet_for_ship(game_map, ship)
+            nearest_unowned_planet = get_nearest_unowned_planet_for_ship(game_map, ship)
+            LOG.debug('ship %s, nearest ANY_planet: %s', ship, nearest_planet)
+            LOG.debug('ship %s, nearest UNO_planet: %s', ship, nearest_unowned_planet)
+            # If the ship is docked
+            if ship.docking_status != ship.DockingStatus.UNDOCKED:
+                # Skip this ship
+                continue
 
-        if ship.can_dock(nearest_unowned_planet):
-            command_queue.append(ship.dock(nearest_unowned_planet))
-        else:
-            navigate_command = ship.navigate(
-                ship.closest_point_to(nearest_unowned_planet),
-                game_map,
-                speed=int(hlt.constants.MAX_SPEED/2),
-                ignore_ships=True)
-            if navigate_command:
-                command_queue.append(navigate_command)
+            if ship.can_dock(nearest_unowned_planet):
+                command_queue.append(ship.dock(nearest_unowned_planet))
+            else:
+                navigate_command = ship.navigate(
+                    ship.closest_point_to(nearest_unowned_planet),
+                    game_map,
+                    speed=int(hlt.constants.MAX_SPEED/2),
+                    ignore_ships=True,
+                    max_corrections=18,
+                    angular_step=5)
+                if navigate_command:
+                    command_queue.append(navigate_command)
 
-    # Send our set of commands to the Halite engine for this turn
-    game.send_command_queue(command_queue)
-    # TURN END
-# GAME END
+        # Send our set of commands to the Halite engine for this turn
+        game.send_command_queue(command_queue)
+        # TURN END
+    # GAME END
+except Exception as e:
+    LOG.critical(e)
+    LOG.critical(traceback.format_exc())
