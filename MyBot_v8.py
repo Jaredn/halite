@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 
 # GAME START
 # Here we define the bot's name as Settler and initialize the game, including communication with the Halite engine.
-game = hlt.Game("Jbot_new")
+game = hlt.Game("Jbot")
 # Then we print our start message to the logs
 LOG = logging.getLogger('jbot')
 LOG.setLevel(logging.INFO)
@@ -116,9 +116,9 @@ def get_nearest_enemy_ship(myship):
             if isinstance(entity, hlt.entity.Ship):
                 LOG.info('It is a ship!')
                 entity_owner = entity.owner
-                my_id = myship.owner
+                my_id = game_map.my_id
                 LOG.info('COMPARING entity_owner %s and my id %s', entity_owner, my_id)
-                if entity.owner != my_id:
+                if entity.owner != game_map.my_id:
                     LOG.info('Not owned by me!!!!, returning %s', entity)
                     return entity
 
@@ -221,7 +221,7 @@ try:
             LOG.debug('ship %s, nearest UNO_planet: %s', ship, nearest_unowned_planet)
 
             # GO TO NEAREST UNOWNED PLANET
-            if nearest_unowned_planet and ship.id % 4 == 0:
+            if nearest_unowned_planet:
                 LOG.info('ship %s going to nearest unowned planet %s', ship, nearest_planet)
                 if ship.can_dock(nearest_unowned_planet):
                     command_queue.append(ship.dock(nearest_unowned_planet))
