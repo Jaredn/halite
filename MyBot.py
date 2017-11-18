@@ -71,6 +71,30 @@ def get_nearest_unowned_planet_for_ship(myship):
                     return entity
 
 
+def get_nearest_big_planet_i_own_for_ship(myship):
+    """Get the nearest planet owned by me for the passed in ship
+
+    Args:
+        game_map: halite game_map instance
+        myship: any ship
+
+    Returns:
+        Planet: instance of a planet
+
+    """
+    entities_by_distance = game_map.nearby_entities_by_distance(myship)
+    LOG.debug('entities by distance: %s', entities_by_distance)
+    for distance in sorted(entities_by_distance):
+        entities = entities_by_distance[distance]
+        LOG.debug('distance: %s, entities: %s', distance, entities)
+        for entity in entities:
+            LOG.debug('entity: %s', entity)
+            if isinstance(entity, hlt.entity.Planet):
+                if entity.owner == myship.owner and entity.radius >= 4:
+                    return entity
+    return None
+
+
 def get_nearest_3_unowned_planets_for_ship(myship):
     """Get the nearest 3 unowned planet for the passed in ship.  Only used for turn 1 logic.
 
@@ -106,20 +130,20 @@ def get_nearest_enemy_ship(myship):
     Returns:
         htl.entity.Ship: Nearest enemy ship
     """
-    LOG.info('Finding nearest enemy ship')
+    LOG.debug('Finding nearest enemy ship')
     entities = game_map.nearby_entities_by_distance(myship)
-    LOG.info('entities: %s', entities)
+    LOG.debug('entities: %s', entities)
     for distance, entity_list in entities.items():
-        LOG.info('checking entity_list: %s', entity_list)
+        LOG.debug('checking entity_list: %s', entity_list)
         for entity in entity_list:
-            LOG.info('checking entity: %s', entity)
+            LOG.debug('checking entity: %s', entity)
             if isinstance(entity, hlt.entity.Ship):
-                LOG.info('It is a ship!')
+                LOG.debug('It is a ship!')
                 entity_owner = entity.owner
                 my_id = myship.owner
-                LOG.info('COMPARING entity_owner %s and my id %s', entity_owner, my_id)
+                LOG.debug('COMPARING entity_owner %s and my id %s', entity_owner, my_id)
                 if entity.owner != my_id:
-                    LOG.info('Not owned by me!!!!, returning %s', entity)
+                    LOG.debug('Not owned by me!!!!, returning %s', entity)
                     return entity
 
 
@@ -133,7 +157,7 @@ def nearby_enemy_docker(myship, all_players):
         player_ships.sort(key=lambda x: myship.calculate_distance_between(x))
         if playerid != game_map.my_id:
             for enemy_ship in player_ships:
-                if enemy_ship.docking_status == enemy_ship.DockingStatus.DOCKING and myship.calculate_distance_between(enemy_ship) <= 35:
+                if enemy_ship.docking_status == enemy_ship.DockingStatus.DOCKING and myship.calculate_distance_between(enemy_ship) <= 20:
                     return enemy_ship
     return False
 
@@ -158,6 +182,7 @@ try:
         my_ships = game_map.get_me().all_ships()
         all_players = game_map.all_players()
         initial_3_planets = []
+        LOG.info('MY SHIPS: %s', len(my_ships))
 
         # For every ship that I control
         shipcount = 0
@@ -172,11 +197,14 @@ try:
 
             # SHIP IS DOCKED, DO NOTHING
             if ship.docking_status != ship.DockingStatus.UNDOCKED:
+                LOG.info('SHIP %s is docked, skipping.', ship.id)
                 # Skip this ship
                 continue
 
             # EARLY TURNS?  DIVIDE AND CONQUER
             if len(my_ships) == 3 and TURN <= 20:
+                LOG.info('In early turns.  Divide and Conquer')
+                navspeed = hlt.constants.MAX_SPEED if TURN >= 3 else hlt.constants.MAX_SPEED / 2
                 if not initial_3_planets:
                     initial_3_planets = get_nearest_3_unowned_planets_for_ship(ship)
                     LOG.info('INITIAL 3 PLANETS: %s', initial_3_planets)
@@ -184,9 +212,10 @@ try:
                     early_shipmap[ship.id] = initial_3_planets[shipcount - 1]
                     LOG.info('EARLY SHIPMAP: %s', early_shipmap)
                 go_to_planet = early_shipmap[ship.id]
-                LOG.info('EARLY TURNS ship %s going to unowned planet %s', ship.id, go_to_planet)
+                LOG.info('SHIP %s going to unowned planet %s', ship.id, go_to_planet)
                 if ship.can_dock(go_to_planet):
                     command_queue.append(ship.dock(go_to_planet))
+                    continue
                 else:
                     navigate_command = ship.navigate(
                         ship.closest_point_to(go_to_planet),
@@ -197,14 +226,14 @@ try:
                         angular_step=5)
                     if navigate_command:
                         command_queue.append(navigate_command)
-                continue
-
+                        continue
 
             # ATTACK ENEMY DOCKERS
-            if nearby_enemy_docker(ship, all_players):
-                logging.info("SHIP %s FOUND NEARBY ENEMY DOCKING SHIP, ATTACKING", ship)
+            enemy_docking_ship = nearby_enemy_docker(ship, all_players)
+            if enemy_docking_ship and TURN >= 40:
+                logging.info("SHIP %s FOUND NEARBY ENEMY DOCKING SHIP, ATTACKING SHIP %s", ship.id, enemy_docking_ship.id)
                 navigate_command = ship.navigate(
-                    ship.closest_point_to(ship),
+                    ship.closest_point_to(enemy_docking_ship),
                     game_map,
                     speed=int(hlt.constants.MAX_SPEED),
                     max_corrections=18,
@@ -213,7 +242,7 @@ try:
                     ignore_planets=False)
                 if navigate_command:
                     command_queue.append(navigate_command)
-                continue
+                    continue
 
             nearest_planet = get_nearest_planet_for_ship(ship)
             nearest_unowned_planet = get_nearest_unowned_planet_for_ship(ship)
@@ -221,10 +250,11 @@ try:
             LOG.debug('ship %s, nearest UNO_planet: %s', ship, nearest_unowned_planet)
 
             # GO TO NEAREST UNOWNED PLANET
-            if nearest_unowned_planet and ship.id % 4 == 0:
-                LOG.info('ship %s going to nearest unowned planet %s', ship, nearest_planet)
+            if nearest_unowned_planet and (ship.id % 3 == 0):
+                LOG.info('SHIP %s going to nearest unowned planet %s', ship.id, nearest_unowned_planet.id)
                 if ship.can_dock(nearest_unowned_planet):
                     command_queue.append(ship.dock(nearest_unowned_planet))
+                    continue
                 else:
                     navigate_command = ship.navigate(
                         ship.closest_point_to(nearest_unowned_planet),
@@ -235,11 +265,32 @@ try:
                         angular_step=5)
                     if navigate_command:
                         command_queue.append(navigate_command)
-                continue
+                        continue
+
+            # GO TO MY NEAREST PLANET AND DOCK
+            my_nearest_planet = get_nearest_big_planet_i_own_for_ship(ship)
+            if my_nearest_planet and (ship.id % 4 == 0):
+                if ship.can_dock(my_nearest_planet):
+                    LOG.info('SHIP %s is docking at my planet %s', ship.id, my_nearest_planet.id)
+                    command_queue.append(ship.dock(my_nearest_planet))
+                    continue
+                else:
+                    navigate_command = ship.navigate(
+                        ship.closest_point_to(my_nearest_planet.get_docked_ship(my_nearest_planet.all_docked_ships[0])),
+                        game_map,
+                        speed=int(hlt.constants.MAX_SPEED),
+                        ignore_ships=False,
+                        max_corrections=18,
+                        angular_step=5)
+                    if navigate_command:
+                        LOG.info('SHIP %s going to my planet %s', ship.id, my_nearest_planet.id)
+                        command_queue.append(navigate_command)
+                        continue
 
             # ATTACK NEAREST ENEMY SHIP
             nearest_enemy_ship = get_nearest_enemy_ship(ship)
             if nearest_enemy_ship:
+                LOG.info('SHIP %s ATTACKING NEAREST ENEMY SHIP %s', ship.id, nearest_enemy_ship.id)
                 navigate_command = ship.navigate(
                     ship.closest_point_to(nearest_enemy_ship),
                     game_map,
@@ -250,7 +301,8 @@ try:
                     ignore_planets=False)
                 if navigate_command:
                     command_queue.append(navigate_command)
-                continue
+                    continue
+            LOG.warning('SHIP %s NO COMMAND GIVEN', ship.id)
 
         # Send our set of commands to the Halite engine for this turn
         game.send_command_queue(command_queue)
