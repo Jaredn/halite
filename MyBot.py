@@ -67,6 +67,26 @@ def get_nearest_unowned_planet_for_ship(myship):
                     return entity
 
 
+def get_nearest_enemy_planet(myship):
+    """Get nearest enemy planet
+
+    Args:
+        myship: any ship
+
+    Returns:
+        Planet: instance of a planet
+
+    """
+    entities_by_distance = game_map.nearby_entities_by_distance(myship)
+    for distance in sorted(entities_by_distance):
+        entities = entities_by_distance[distance]
+        for entity in entities:
+            if isinstance(entity, hlt.entity.Planet):
+                if entity.is_owned() and entity.owner.id != game_map.my_id:
+                    return entity
+    return []
+
+
 def get_nearest_notfull_planet_i_own_for_ship(myship):
     """Get the nearest planet owned by me for the passed in ship
 
@@ -159,7 +179,7 @@ def get_nearby_enemy_docker(myship):
         player_ships.sort(key=lambda x: myship.calculate_distance_between(x))
         if playerid != game_map.my_id:
             for enemy_ship in player_ships:
-                if enemy_ship.docking_status != enemy_ship.DockingStatus.UNDOCKED and myship.calculate_distance_between(enemy_ship) <= 10:
+                if enemy_ship.docking_status != enemy_ship.DockingStatus.UNDOCKED and myship.calculate_distance_between(enemy_ship) <= 12:
                     return enemy_ship
     return False
 
@@ -223,41 +243,63 @@ def go_to_nearest_enemy_ship(myship, leader_only=False):
     return False
 
 
-def general_attack(myship):
+def general_attack(myship, attack_planet=False, closest_point=True):
     """This is my default attack mode.  Tweak as necessary.
 
     Args:
         myship:
+        attack_planet (bool): Should I attack a planet instead?
+        closest_point (bool): Closest point, or straight in?
 
     Returns:
         bool: True if action was successful
     """
-    dist_ratio = 1  # How much further will you go to attack the leader?  Example:  3x
-    nearest_leader_ship = get_nearest_enemy_ship(myship, leader_only=True)
-    nearest_enemy_ship = get_nearest_enemy_ship(myship, leader_only=False)
-    dist_to_leader_ship = nearest_leader_ship.calculate_distance_between(myship)
-    dist_to_enemy_ship = nearest_enemy_ship.calculate_distance_between(myship)
-
-    if nearest_enemy_ship == nearest_leader_ship:
-        ship_to_attack = nearest_enemy_ship
-    elif dist_to_leader_ship / dist_to_enemy_ship <= dist_ratio:
-        # basically, if leader ship is less than dist_ratio times further away, hit the leader.
-        ship_to_attack = nearest_leader_ship
-        LOG.info('General Attack: Hitting Leader Due to Distance Override!')
+    if attack_planet:
+        nearest_enemy_planet = get_nearest_enemy_planet(myship)
+        if nearest_enemy_planet:
+            if closest_point:
+                target = myship.closest_point_to(nearest_enemy_planet)
+            else:
+                target = nearest_enemy_planet
+            navigate_command = myship.navigate(
+                target,
+                game_map,
+                speed=int(hlt.constants.MAX_SPEED),
+                max_corrections=18,
+                angular_step=5,
+                ignore_ships=False,
+                ignore_planets=False)
+            if navigate_command:
+                command_queue.append(navigate_command)
+                LOG.info('SHIP %s is ATTACKING PLANET %s', myship.id, nearest_enemy_planet.id)
+                return True
     else:
-        ship_to_attack = nearest_enemy_ship
-    navigate_command = ship.navigate(
-        myship.closest_point_to(ship_to_attack),
-        game_map,
-        speed=int(hlt.constants.MAX_SPEED),
-        max_corrections=18,
-        angular_step=5,
-        ignore_ships=False,
-        ignore_planets=False)
-    if navigate_command:
-        command_queue.append(navigate_command)
-        LOG.info('SHIP %s is ATTACKING enemy ship %s', myship.id, ship_to_attack.id)
-        return True
+        dist_ratio = 1  # How much further will you go to attack the leader?  Example:  3x
+        nearest_leader_ship = get_nearest_enemy_ship(myship, leader_only=True)
+        nearest_enemy_ship = get_nearest_enemy_ship(myship, leader_only=False)
+        dist_to_leader_ship = nearest_leader_ship.calculate_distance_between(myship)
+        dist_to_enemy_ship = nearest_enemy_ship.calculate_distance_between(myship)
+
+        if nearest_enemy_ship == nearest_leader_ship:
+            ship_to_attack = nearest_enemy_ship
+        elif dist_to_leader_ship / dist_to_enemy_ship <= dist_ratio:
+            # basically, if leader ship is less than dist_ratio times further away, hit the leader.
+            ship_to_attack = nearest_leader_ship
+            LOG.info('General Attack: Hitting Leader Due to Distance Override!')
+        else:
+            ship_to_attack = nearest_enemy_ship
+        navigate_command = myship.navigate(
+            myship.closest_point_to(ship_to_attack),
+            game_map,
+            speed=int(hlt.constants.MAX_SPEED),
+            max_corrections=18,
+            angular_step=5,
+            ignore_ships=False,
+            ignore_planets=False)
+        if navigate_command:
+            command_queue.append(navigate_command)
+            LOG.info('SHIP %s is ATTACKING enemy ship %s', myship.id, ship_to_attack.id)
+            return True
     return False
 
 
@@ -290,6 +332,7 @@ def general_expansion(myship):
             best_planet = unowned_planet
 
     if go_to_and_dock_at_planet(myship, best_planet, check_for_enemies=True):
+        ships_expanding.append(myship)
         return True
     return False
 
@@ -326,7 +369,7 @@ def go_to_and_dock_at_planet(myship, some_planet, travel_speed=hlt.constants.MAX
 
 def go_to_specific_ship(myship, some_ship):
     navigate_command = myship.navigate(
-        some_ship,
+        myship.closest_point_to(some_ship),
         game_map,
         speed=hlt.constants.MAX_SPEED,
         ignore_ships=False,
@@ -456,8 +499,13 @@ try:
             all_ships.extend([x for x in player.all_ships()])
         my_planets = get_my_planets()
         leader = find_leader()
+        my_undocked_ships = []
+        for ship in my_ships:
+            if ship.docking_status == ship.DockingStatus.UNDOCKED:
+                my_undocked_ships.append(ship)
         ships_with_actions = []
         update_defend_list()
+        ships_expanding = []
         LOG.info('DEFEND AGAINST: %s', defend_against_ships)
 
         # PRIORITY DEFENSE ACTIONS
@@ -519,16 +567,24 @@ try:
                 if go_to_and_dock_at_planet(ship, initial_planet, travel_speed=speed):
                     continue
 
-            if TURN <= 100:
+            if len(my_undocked_ships):
+                ratio_expanding = len(ships_expanding) / len(my_undocked_ships)
+            else:
+                ratio_expanding = 0
+            # Generally expand with some percentage of ships.
+            if general_expansion(ship):
+                continue
+
+            if ship.health <= 64:
                 if general_expansion(ship):
                     continue
+            if TURN <= 180:
+                # have some ships group up on an enemy planet
+                if ship.id % 5 <= 2:
+                    if general_attack(ship, attack_planet=True, closest_point=True):
+                        continue
 
-            if ship.id % 5 <= 3 or ship.health <= 128:
-                if general_expansion(ship):
-                    continue
-
-            # ATTACK NEAREST ENEMY SHIP
-            if general_attack(ship):
+            if general_attack(ship, attack_planet=False):
                 continue
             LOG.warning('SHIP %s NO COMMAND GIVEN', ship.id)
 
