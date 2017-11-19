@@ -26,23 +26,25 @@ LOG.setLevel(logging.INFO)
 LOG.info("Starting my jbot !")
 
 
-def get_nearest_planet_for_ship(myship):
-    """Get the nearest planet of any type for the passed in ship
+def get_my_planets():
+    """Returns only my planets"""
+    x = []
+    for planet in all_planets:
+        if planet.is_owned() and game_map.my_id == planet.owner.id:
+            x.append(planet)
+    return x
 
-    Args:
-        game_map: halite game_map instance
-        myship: any ship
 
-    Returns:
-        Planet: instance of a planet
+def get_average_size_of_my_planets():
+    all_sizes_added = 0
+    average_size = 0
 
-    """
-    entities_by_distance = game_map.nearby_entities_by_distance(myship)
-    for distance in sorted(entities_by_distance):
-        entities = entities_by_distance[distance]
-        for entity in entities:
-            if isinstance(entity, hlt.entity.Planet):
-                return entity
+    for planet in my_planets:
+        all_sizes_added += planet.radius
+
+    if len(my_planets):
+        average_size = all_sizes_added / len(my_planets)
+    return average_size
 
 
 def get_nearest_unowned_planet_for_ship(myship):
@@ -76,6 +78,13 @@ def get_nearest_notfull_planet_i_own_for_ship(myship):
         Planet: instance of a planet that isn't full
 
     """
+    # Get Tuple of Tuples representing Not Full Planets I own in (distance, radius)
+    average_size_of_my_planets = get_average_size_of_my_planets()
+    for planet in my_planets:
+        if not planet.is_full() and planet.radius >= average_size_of_my_planets:
+            return planet
+
+    # Otherwise, lets just get the closest planet...
     entities_by_distance = game_map.nearby_entities_by_distance(myship)
     for distance in sorted(entities_by_distance):
         entities = entities_by_distance[distance]
@@ -109,6 +118,9 @@ def get_biggest_early_planet_for_ship(myship):
                         three_planets.sort(key=lambda x: x.radius, reverse=True)
                         LOG.critical(three_planets)
                         return three_planets[0]
+    if len(three_planets):
+        return three_planets[0]
+    return False
 
 
 def get_nearest_enemy_ship(myship, leader_only=False):
@@ -132,9 +144,14 @@ def get_nearest_enemy_ship(myship, leader_only=False):
                         return entity
 
 
-def nearby_enemy_docker(myship, all_players):
-    """
-    Locate a nearby enemy ship docking
+def get_nearby_enemy_docker(myship):
+    """Check for nearby enemy docking ships
+
+    Args:
+        myship (Ship):
+
+    Returns:
+
     """
     for player in all_players:
         playerid = player.id
@@ -215,7 +232,7 @@ def general_attack(myship):
     Returns:
         bool: True if action was successful
     """
-    dist_ratio = 5  # How much further will you go to attack the leader?  Example:  3x
+    dist_ratio = 1  # How much further will you go to attack the leader?  Example:  3x
     nearest_leader_ship = get_nearest_enemy_ship(myship, leader_only=True)
     nearest_enemy_ship = get_nearest_enemy_ship(myship, leader_only=False)
     dist_to_leader_ship = nearest_leader_ship.calculate_distance_between(myship)
@@ -240,6 +257,84 @@ def general_attack(myship):
     if navigate_command:
         command_queue.append(navigate_command)
         LOG.info('SHIP %s is ATTACKING enemy ship %s', myship.id, ship_to_attack.id)
+        return True
+    return False
+
+
+def general_expansion(myship):
+    """This is what a ship should do if it should be expanding.
+
+    Args:
+        myship: a Ship instance.
+
+    Returns:
+        bool: True if action is successful
+    """
+    # GO TO MY NEAREST NOT FULL BIG PLANET AND DOCK
+    planet_i_own = get_nearest_notfull_planet_i_own_for_ship(myship)
+    unowned_planet = get_nearest_unowned_planet_for_ship(myship)
+    if planet_i_own and not unowned_planet:
+        best_planet = planet_i_own
+    elif unowned_planet and not planet_i_own:
+        best_planet = unowned_planet
+    elif not planet_i_own and not unowned_planet:
+        # NOWHERE TO EXPAND TO, SOMETHING ELSE NEEDS TO HAPPEN
+        return False
+    else:
+        size_ratio = unowned_planet.radius / planet_i_own.radius
+        if planet_i_own.radius >= unowned_planet.radius:
+            best_planet = planet_i_own
+        elif size_ratio <= 1.3:
+            best_planet = planet_i_own
+        else:
+            best_planet = unowned_planet
+
+    if go_to_and_dock_at_planet(myship, best_planet, check_for_enemies=True):
+        return True
+    return False
+
+
+def go_to_and_dock_at_planet(myship, some_planet, travel_speed=hlt.constants.MAX_SPEED, check_for_enemies=True):
+    if myship.can_dock(some_planet) and not some_planet.is_full():
+        if check_for_enemies:
+            nearest_enemy = get_nearest_enemy_ship(myship, leader_only=False)
+            if myship.calculate_distance_between(nearest_enemy) >= 15:
+                LOG.info('SHIP %s is docking at planet %s', myship.id, some_planet.id)
+                command_queue.append(myship.dock(some_planet))
+                return True
+            else:
+                LOG.info('SHIP %s NOT docking at planet %s due to nearby enemy ship %s', myship.id, some_planet.id, nearest_enemy.id)
+        else:
+            LOG.info('SHIP %s is docking at planet %s', myship.id, some_planet.id)
+            command_queue.append(myship.dock(some_planet))
+            return True
+
+    elif not some_planet.is_full():
+        navigate_command = myship.navigate(
+            myship.closest_point_to(some_planet),
+            game_map,
+            speed=travel_speed,
+            ignore_ships=False,
+            max_corrections=18,
+            angular_step=5)
+        if navigate_command:
+            LOG.info('SHIP %s going to planet %s', myship.id, some_planet.id)
+            command_queue.append(navigate_command)
+            return True
+    return False
+
+
+def go_to_specific_ship(myship, some_ship):
+    navigate_command = myship.navigate(
+        some_ship,
+        game_map,
+        speed=hlt.constants.MAX_SPEED,
+        ignore_ships=False,
+        max_corrections=18,
+        angular_step=5)
+    if navigate_command:
+        LOG.info('SHIP %s going to attack specific ship %s', myship.id, some_ship.id)
+        command_queue.append(navigate_command)
         return True
     return False
 
@@ -269,9 +364,77 @@ def find_leader():
     return leader
 
 
+def get_enemy_ships_near_entity(myentity, filter_distance):
+    """
+
+    Args:
+        myentity (Entity): any entity (ship or planet)
+        filter_distance: Radius to check within for enemy ships
+
+    Returns:
+        list: of enemy Ships
+    """
+    ship_list = []
+    entities_by_distance = game_map.nearby_entities_by_distance(myentity)
+    for distance, entity_list in sorted(entities_by_distance.items()):
+        for entity in entity_list:
+            if isinstance(entity, hlt.entity.Ship):
+                if entity.owner != myentity.owner:
+                    if distance <= filter_distance:
+                        ship_list.append(entity)
+    return ship_list
+
+
+def update_defend_list():
+    """Updates defend_against_ships global."""
+    # This for loop removes any ship that died from defend_against_ships
+    for some_ship in defend_against_ships:
+        if some_ship not in all_ships:
+            defend_against_ships.remove(some_ship)
+
+    # This for loop updates defend_against_ships for any new ships
+    # First loop over my ships, and find DOCKED/DOCKING Ships.
+    # Then find nearby enemy ships that may be coming to attack my docked ships.
+    # Update the defend_against_ships list
+    for myship in my_ships:
+        if myship.docking_status != myship.DockingStatus.UNDOCKED:
+            for enemy_ship in get_enemy_ships_near_entity(myship, 30):
+                if enemy_ship not in defend_against_ships:
+                    defend_against_ships.append(enemy_ship)
+
+
+def get_my_closest_ships_to_ship(some_ship, num_ships, filter_distance):
+    """
+
+    Args:
+        some_ship: enemy ship
+        num_ships: number of my ships to find nearby
+        filter_distance: max distance to look within
+
+    Returns:
+        list: of my Ships
+    """
+    my_closest_ships = []
+    entities_by_distance = game_map.nearby_entities_by_distance(some_ship)
+    for distance, entity_list in sorted(entities_by_distance.items()):
+        for entity in entity_list:
+            if isinstance(entity, hlt.entity.Ship):
+                if entity.owner.id == game_map.my_id:
+                    if distance <= filter_distance:
+                        if entity not in ships_with_actions:
+                            my_closest_ships.append(entity)
+                            if len(my_closest_ships) == num_ships:
+                                return my_closest_ships
+    return my_closest_ships
+
+
+
+
+
 try:
     TURN = 0
     initial_planet = None
+    defend_against_ships = []
     while True:
         # TURN START
 
@@ -288,7 +451,27 @@ try:
         my_ships = game_map.get_me().all_ships()
         all_planets = game_map.all_planets()
         all_players = game_map.all_players()
+        all_ships = []
+        for player in all_players:
+            all_ships.extend([x for x in player.all_ships()])
+        my_planets = get_my_planets()
         leader = find_leader()
+        ships_with_actions = []
+        update_defend_list()
+        LOG.info('DEFEND AGAINST: %s', defend_against_ships)
+
+        # PRIORITY DEFENSE ACTIONS
+        for enemy_ship in defend_against_ships:
+            # find my closest x ships to this ship
+            my_closest_ships = get_my_closest_ships_to_ship(enemy_ship, 2, 60)
+            for close_ship in my_closest_ships:
+                if close_ship not in ships_with_actions:
+                    if close_ship.docking_status == close_ship.DockingStatus.UNDOCKED:
+                        if go_to_specific_ship(close_ship, enemy_ship):
+                            LOG.info('SHIP %s GOT PRIORITY DEFENSE AGAINST SHIP %s', close_ship, enemy_ship)
+                            ships_with_actions.append(close_ship)
+
+        LOG.info('PRIORITY ACTIONS: %s', ships_with_actions)
 
         # For every ship that I control
         for ship in my_ships:
@@ -298,18 +481,23 @@ try:
                 LOG.warning('BAILING TURN FOR TIMEOUT')
                 continue  # break out of the per ship loop, which should send our commands
 
+            # SKIP IF SHIP ALREADY HAS PRIORITY ACTION (LIKE DEFENSE)
+            if ship in ships_with_actions:
+                continue
+
             # SHIP IS DOCKED, DO NOTHING
             if ship.docking_status != ship.DockingStatus.UNDOCKED:
                 LOG.debug('SHIP %s is docked, skipping.', ship.id)
                 # Skip this ship
                 continue
+
             if not initial_planet and TURN is 1:
                 initial_planet = get_biggest_early_planet_for_ship(ship)
                 LOG.critical('GETTING INITIAL PLANET: id %s', initial_planet.id)
 
             # ATTACK ENEMY DOCKERS
-            enemy_docking_ship = nearby_enemy_docker(ship, all_players)
-            if enemy_docking_ship and TURN >= 20:
+            enemy_docking_ship = get_nearby_enemy_docker(ship)
+            if enemy_docking_ship:
                 logging.info("SHIP %s FOUND NEARBY ENEMY DOCKING SHIP, ATTACKING SHIP %s", ship.id, enemy_docking_ship.id)
                 navigate_command = ship.navigate(
                     ship.closest_point_to(enemy_docking_ship),
@@ -323,51 +511,21 @@ try:
                     command_queue.append(navigate_command)
                     continue
 
-            # EARLY TURNS?  HUMP BIGGEST INITIAL PLANET
-            if len(my_ships) <= 10 and TURN <= 15:
-                LOG.info('In early turns.  HUMP PLANET')
-                if ship.can_dock(initial_planet) and not initial_planet.is_full():
-                    command_queue.append(ship.dock(initial_planet))
-                    LOG.info('SHIP %s docking at initial planet %s', ship.id, initial_planet.id)
-                    continue
-                elif not initial_planet.is_full():
-                    navigate_command = ship.navigate(
-                        ship.closest_point_to(initial_planet),
-                        game_map,
-                        speed=hlt.constants.MAX_SPEED,
-                        ignore_ships=False,
-                        ignore_planets=False,
-                        max_corrections=18,
-                        angular_step=5)
-                    if navigate_command:
-                        command_queue.append(navigate_command)
-                        LOG.info('SHIP %s going to initial planet %s', ship.id, initial_planet.id)
-                        continue
-
-            # GO TO NEAREST UNOWNED PLANET
-            if ship.id % 4 == 0:
-                if go_to_nearest_unowned_planet(ship):
+            if TURN <= 10:
+                if ship.calculate_distance_between(initial_planet) < 15:
+                    speed = hlt.constants.MAX_SPEED / 2
+                else:
+                    speed = hlt.constants.MAX_SPEED
+                if go_to_and_dock_at_planet(ship, initial_planet, travel_speed=speed):
                     continue
 
-            # GO TO MY NEAREST NOT FULL BIG PLANET AND DOCK
-            my_nearest_planet = get_nearest_notfull_planet_i_own_for_ship(ship)
-            if my_nearest_planet and (ship.id % 3 == 1):
-                if ship.can_dock(my_nearest_planet) and not my_nearest_planet.is_full():
-                    LOG.info('SHIP %s is docking at my planet %s', ship.id, my_nearest_planet.id)
-                    command_queue.append(ship.dock(my_nearest_planet))
+            if TURN <= 100:
+                if general_expansion(ship):
                     continue
-                elif not my_nearest_planet.is_full():
-                    navigate_command = ship.navigate(
-                        ship.closest_point_to(my_nearest_planet),
-                        game_map,
-                        speed=int(hlt.constants.MAX_SPEED),
-                        ignore_ships=False,
-                        max_corrections=18,
-                        angular_step=5)
-                    if navigate_command:
-                        LOG.info('SHIP %s going to my planet %s', ship.id, my_nearest_planet.id)
-                        command_queue.append(navigate_command)
-                        continue
+
+            if ship.id % 5 <= 3 or ship.health <= 128:
+                if general_expansion(ship):
+                    continue
 
             # ATTACK NEAREST ENEMY SHIP
             if general_attack(ship):
